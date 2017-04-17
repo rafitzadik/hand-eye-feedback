@@ -164,7 +164,7 @@ def xyz_from_angles(angles):
     
 
 green_lower = np.array([40, 20, 10],np.uint8)
-green_upper = np.array([110, 255, 255],np.uint8)
+green_upper = np.array([110, 255, 170],np.uint8)
 red_lower = np.array([150, 80, 30],np.uint8)
 red_upper = np.array([250, 255, 255],np.uint8)
 
@@ -198,7 +198,46 @@ def detect_color(color,  lower_thresh, upper_thresh):
 
     return c, c_center
 
+def find_rect_contour_orientation(contour):
+    #Assuming the contour is a rectangle looked at from an angle left or right (so yaw, no pitch or roll)
+    #find whether the yaw is left or right
+    #1 means left, -1 means right, 0 means it seems straight on
+    bx,by,bw,bh = cv2.boundingRect(blob)
+    leftx = bx+5
+    rightx = bx+bw-5
+    first_left = 0
+    first_right = 0
+    for dy in range(1,bh/2):
+        if first_left == 0:
+            if cv2.pointPolygonTest(contour, (leftx, by+bh-dy), False) >= 0:
+                first_left = by+bh-dy
+        if first_right == 0:
+            if cv2.pointPolygonTest(contour, (rightx, by+bh-dy), False) >= 0:
+                first_right = by+bh-dy
+        if first_left != 0 and first_right != 0:
+            break
+    print 'find_rect_contour_orientation: ({},{})'.format(first_left, first_right)
+    if first_left - first_right > 5:
+        return -1
+    if first_right - first_left > 5:
+        return 1
+    return 0
 
+def find_rect_contour_orientation_alt(contour):
+    #Assuming the contour is a rectangle looked at from an angle left or right (so yaw, no pitch or roll)
+    #find whether the yaw is left or right
+    #1 means left, -1 means right, 0 means it seems straight on
+    #alternative implementation, using approxPolyDP
+    approx = cv2.approxPolyDP(contour, 30, True)
+    pts_from_top = sorted(approx, key = lambda pt: pt[0][1])
+    print pts_from_top[0][0][1], pts_from_top[1][0][1]
+    if pts_from_top[1][0][1] - pts_from_top[0][0][1] > 5: #is there more than a 5 pixel difference?
+        if pts_from_top[1][0][0] > pts_from_top[0][0][0]: #is the higher on the left or right?
+            return -1
+        else:
+            return 1
+    else:
+        return 0
 
 #testing xyz_from_angles
 #angles = find_angles([5,20,15],0)
@@ -221,8 +260,8 @@ wait_stop(ser)
 state = 'wait_target'
 cnt = 0
 move_spd = 100
-next_move = [0,0,0]
-cur_move = [0,0,0]
+next_move = [0,0,0,0]
+cur_move = [0,0,0,0]
 plug_d_bh = 280 #plug height that I want to see, which is then plug_d_cm away
 plug_d_cm = 19 #when I see the plug height at plug_bh it is plug_cm centimeters away
 
@@ -235,89 +274,42 @@ while(True):
             cv2.drawContours(frame, [blob], 0, (255, 0, 0), 2)
             x,y,bw,bh = cv2.boundingRect(blob)
             cv2.rectangle(frame,(x,y),(x+bw,y+bh),(0,255,0),2)
+            approx = cv2.approxPolyDP(blob, 30, True)
+            cv2.drawContours(frame, [approx], 0, (0, 0, 255), 2)
             cv2.line(frame, (frame.shape[1]/2,frame.shape[0]/2-plug_d_bh/2),(frame.shape[1]/2,frame.shape[0]/2+plug_d_bh/2), (0,0,255))
             cv2.putText(frame, 'State: {}, bh: {}, bw: {}'.format(state, bh, bw), (0,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
             if state == 'wait_target':
                 cv2.putText(frame, 'press <space> to start', (0,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
             if state == 'find_center':
-                cv2.putText(frame, 'moving to center', (0,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
                 next_move[0] = np.sign( int(((x+bw/2) - (frame.shape[1]/2))/20) ) #shape center minus frame center, accuracy of 20 pixels
-                next_move[1] = -np.sign( int(((y+bh/2) - (frame.shape[0]/2))/20) )
+                next_move[1] = -np.sign( int(((y+bh/2) - (frame.shape[0]/2+20))/20) )
                 next_move[2] = -np.sign( int ((bh-plug_d_bh)/5)) #determine Z by the shape height, assuming no roll, accuracy of 5 pixels
-                if next_move == [0,0,0]: #we found center!
-                    state = 'find_yaw_init'
+                next_move[3] = find_rect_contour_orientation_alt(blob)
+                cv2.putText(frame, 'moving to center, {}'.format(next_move), (0,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
+                if next_move == [0,0,0,0]: #we found center!
+                    state = 'DONE'
                     stop_now(ser)
                 elif cur_move != next_move or not still_moving(ser):
                     print 'change from ', cur_move, ' to ', next_move
                     if still_moving(ser):
                         print 'stop first'
                         stop_now(ser)
-                    cur_pos = xyz_from_angles(angles_from_pos(get_pos(ser)))
-                    next_pos = np.array(cur_pos)+(np.array(next_move)*2)
+                    cur_angles = angles_from_pos(get_pos(ser))
+                    cur_pos = xyz_from_angles(cur_angles)
+                    next_pos = [0,0,0,0]
+                    next_pos[0] = cur_pos[0] - next_move[3] * 2 #if I see left yaw, move right
+                    next_pos[1] = cur_pos[1] + next_move[1] * 2 #if I see the center low, move low
+                    next_pos[2] = cur_pos[2] + next_move[2] * 2 #if I see the blob far, move out
+                    next_pos[3] = cur_angles[4] + next_move[0] * (10.0/180*pi) #if I see the blob left, rotate angle to left
                     print 'next_pos: ', next_pos
-                    move_to_angle(ser, list(find_angles(next_pos,pi/2)) + [0,pi], spd = move_spd)
-                    cur_move = list(next_move)
-            elif state == 'find_yaw_init':
-                prev_bw = bw
-                cur_pos = xyz_from_angles(angles_from_pos(get_pos(ser)))
-                cur_zx = np.array([cur_pos[2], cur_pos[0]])
-                cur_wrist_angle = 0 #that's how we got here
-                cur_shoulder_angle = atan(cur_zx[1]/cur_zx[0])
-                cur_angle = cur_shoulder_angle #current angle is shoulder_angle since wrist_angle=0
-                plug_center_zx = cur_zx + np.array([cos(cur_wrist_angle-cur_shoulder_angle),sin(cur_wrist_angle-cur_shoulder_angle)])*plug_d_cm
-                angle_step = 10.0/180*pi #start arbitrarily with 10 degrees left
-                next_angle = cur_angle + angle_step 
-                new_zx = plug_center_zx - np.array([cos(next_angle),-sin(next_angle)])*plug_d_cm
-                new_pos = [new_zx[1],cur_pos[1],new_zx[0]]
-                new_shoulder_angle = atan(new_zx[0]/new_zx[1])
-                if new_shoulder_angle < 0:
-                    new_shoulder_angle = pi + new_shoulder_angle
-                new_wrist_angle = (pi/2 - new_shoulder_angle)+next_angle
-                cur_angle = next_angle
-                print 'I am in ', cur_pos, ' wrist_angle: ', cur_wrist_angle, ' cur_shoulder_angle: ', cur_shoulder_angle
-                print 'estimate plug_center_zx ', plug_center_zx
-                print 'Now want to see from angle ', next_angle
-                print 'So moving to new_zx ', new_zx, ' with new_wrist_angle ', new_wrist_angle
-                state = "find_yaw"
-                move_to_angle(ser, list(find_angles(new_pos,pi/2)) + [-new_wrist_angle,pi], spd = move_spd)
-            elif state == 'find_yaw':
-                if not still_moving(ser):
-                    if bw > prev_bw: #that's good, continue
-                        angle_step = angle_step #no-op
-                        print 'good direction, trying another step of ', angle_step
-                    else:
-                        angle_step = -(angle_step*0.8) #go the other way at lower speed
-                        print 'wrong direction, trying instead a step of ', angle_step
-                    if abs(angle_step) < 1.0/180*pi:
-                        #we're down to tiny adjustments, say we found it
-                        state = 'found_yaw'
-                    else:
-                        prev_bw = bw
-                        cur_pos = xyz_from_angles(angles_from_pos(get_pos(ser)))
-                        cur_zx = np.array([cur_pos[2], cur_pos[0]])
-                        cur_wrist_angle = new_wrist_angle #that's how we got here
-                        cur_shoulder_angle = atan(cur_zx[1]/cur_zx[0])
-                        next_angle = cur_angle + angle_step 
-                        new_zx = plug_center_zx - np.array([cos(next_angle),-sin(next_angle)])*plug_d_cm
-                        new_pos = [new_zx[1],cur_pos[1],new_zx[0]]
-                        new_shoulder_angle = atan(new_zx[0]/new_zx[1])
-                        if new_shoulder_angle < 0:
-                            new_shoulder_angle = pi + new_shoulder_angle
-                        new_wrist_angle = (pi/2 - new_shoulder_angle)+next_angle
-                        cur_angle= next_angle
-                        print 'I am in ', cur_pos, ' wrist_angle: ', cur_wrist_angle, ' cur_shoulder_angle: ', cur_shoulder_angle
-                        print 'estimate plug_center_zx ', plug_center_zx
-                        print 'Now want to see from angle ', next_angle
-                        print 'So moving to new_zx ', new_zx, ' with new_wrist_angle ', new_wrist_angle
-                        #cv2.waitKey(0)
-                        move_to_angle(ser, list(find_angles(new_pos,pi/2)) + [-new_wrist_angle,pi], spd = move_spd)
-                                    
+                    move_to_angle(ser, list(find_angles(next_pos[0:3],pi/2)) + [next_pos[3],pi], spd = move_spd)
+                    cur_move = list(next_move)                                    
         cv2.imshow('frame',frame)
     key = cv2.waitKey(1) & 0xFF
     if key == ord(' '):
-        if state == 'wait_target':
+        if state == 'wait_target' or state =='DONE':
             state = 'find_center'
-            cur_move = [0,0,0]
+            cur_move = [0,0,0,0]
     if key == ord('q'):
         break
     elif key == ord('f'):
