@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 servo_angles = [[0, pi, -1800/pi, 2200], 
                 [-pi/2, pi/2, 1650/pi, 1370], 
                 [0, pi, 1560/pi, 740], 
-                [pi/2, 3*pi/2, -1850/pi, 3400], 
+                [pi/2, 3*pi/2, -1900/pi, 3400], #should be -1850, but not working as well
                 [-pi/2,pi/2, 1800/pi, 1500],
                 [0,pi, 1300/pi, 700]] 
 
@@ -164,7 +164,7 @@ def xyz_from_angles(angles):
     
 
 green_lower = np.array([40, 20, 10],np.uint8)
-green_upper = np.array([110, 255, 170],np.uint8)
+green_upper = np.array([110, 255, 120],np.uint8)
 red_lower = np.array([150, 80, 30],np.uint8)
 red_upper = np.array([250, 255, 255],np.uint8)
 
@@ -247,6 +247,9 @@ def find_rect_contour_orientation_alt(contour):
 #exit()
 
 cap = cv2.VideoCapture(3)
+#cap2 = cv2.VideoCapture(5)
+
+#outFile = cv2.VideoWriter('/home/rafi/Videos/find-plug.avi', cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), 20, (1280, 480), True)
 
 ser = serial.Serial('/dev/ttyUSB0', 9600)
 zero_position(ser)
@@ -263,7 +266,9 @@ move_spd = 100
 next_move = [0,0,0,0]
 cur_move = [0,0,0,0]
 plug_d_bh = 280 #plug height that I want to see, which is then plug_d_cm away
-plug_d_cm = 19 #when I see the plug height at plug_bh it is plug_cm centimeters away
+plug_d_bh_close = 380 #plug height at the closer location
+wait_1_time = 2
+get_close_l = 10
 
 while(True):
     ret, frame = cap.read()
@@ -282,12 +287,13 @@ while(True):
                 cv2.putText(frame, 'press <space> to start', (0,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
             if state == 'find_center':
                 next_move[0] = np.sign( int(((x+bw/2) - (frame.shape[1]/2))/20) ) #shape center minus frame center, accuracy of 20 pixels
-                next_move[1] = -np.sign( int(((y+bh/2) - (frame.shape[0]/2+20))/20) )
+                next_move[1] = -np.sign( int(((y+bh/2) - (frame.shape[0]/2))/20) )
                 next_move[2] = -np.sign( int ((bh-plug_d_bh)/5)) #determine Z by the shape height, assuming no roll, accuracy of 5 pixels
                 next_move[3] = find_rect_contour_orientation_alt(blob)
                 cv2.putText(frame, 'moving to center, {}'.format(next_move), (0,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
                 if next_move == [0,0,0,0]: #we found center!
-                    state = 'DONE'
+                    state = 'wait_1'
+                    wait_start_time = time.time()
                     stop_now(ser)
                 elif cur_move != next_move or not still_moving(ser):
                     print 'change from ', cur_move, ' to ', next_move
@@ -297,18 +303,51 @@ while(True):
                     cur_angles = angles_from_pos(get_pos(ser))
                     cur_pos = xyz_from_angles(cur_angles)
                     next_pos = [0,0,0,0]
-                    next_pos[0] = cur_pos[0] - next_move[3] * 2 #if I see left yaw, move right
+                    next_pos[0] = cur_pos[0] - next_move[3] * 1 #if I see left yaw, move right
                     next_pos[1] = cur_pos[1] + next_move[1] * 2 #if I see the center low, move low
                     next_pos[2] = cur_pos[2] + next_move[2] * 2 #if I see the blob far, move out
                     next_pos[3] = cur_angles[4] + next_move[0] * (10.0/180*pi) #if I see the blob left, rotate angle to left
                     print 'next_pos: ', next_pos
                     move_to_angle(ser, list(find_angles(next_pos[0:3],pi/2)) + [next_pos[3],pi], spd = move_spd)
                     cur_move = list(next_move)                                    
+            if state == 'wait_1':
+                if time.time() - wait_start_time >= wait_1_time:
+                    state = 'get_close'
+                    cur_angles = angles_from_pos(get_pos(ser))
+                    cur_pos = xyz_from_angles(cur_angles)
+                    angle = atan(cur_pos[0]/cur_pos[2])+cur_angles[4]
+                    delta_z = get_close_l*cos(angle)
+                    delta_x = get_close_l*sin(angle)
+                    next_pos = [0,0,0]
+                    next_pos[0] = cur_pos[0]+delta_x
+                    next_pos[1] = cur_pos[1]+3
+                    next_pos[2] = cur_pos[2]+delta_z
+                    new_angle = angle - atan(next_pos[0]/next_pos[2])
+                    print 'cur_pos: ', cur_pos
+                    print 'cur_angles: ', cur_angles
+                    print 'angle: ', angle
+                    print 'next_pos: ', next_pos
+                    print 'new_angle: ', new_angle
+                    move_to_angle(ser,list(find_angles(next_pos,pi/2)) + [new_angle,pi], 2000)
+            if state == 'get_close':
+                if not still_moving(ser):
+                    state = 'DONE'
+        #ret2, frame2 = cap2.read()
+        #img2 = cv2.resize(frame2, (frame.shape[1], frame.shape[0]))
+        #both = np.concatenate((frame,img2), axis=1)
+        #cv2.imshow('frame',both)
+        #outFile.write(both)
         cv2.imshow('frame',frame)
     key = cv2.waitKey(1) & 0xFF
     if key == ord(' '):
-        if state == 'wait_target' or state =='DONE':
+        if state == 'wait_target':
             state = 'find_center'
+            cur_move = [0,0,0,0]
+        if state =='DONE':
+            angles = list(find_angles(T_init,pi/2)) + [0,pi]
+            #b0,b1,b2,b3 = find_angles(T_init,0)
+            move_to_angle(ser, angles, 1000)
+            state = 'wait_target'
             cur_move = [0,0,0,0]
     if key == ord('q'):
         break
@@ -319,4 +358,6 @@ while(True):
 # When everything done, release the capture
 rest(ser)
 cap.release()
+#cap2.release()
+#outFile.release()
 cv2.destroyAllWindows()
