@@ -25,13 +25,13 @@ logging.basicConfig(level=logging.INFO)
 servo_angles = [[0, pi, -1800/pi, 2200], 
                 [-pi/2, pi/2, 1650/pi, 1370], 
                 [0, pi, 1560/pi, 740], 
-                [pi/2, 3*pi/2, -1900/pi, 3400], #should be -1850, but not working as well
+                [pi/2, 3*pi/2, -1870/pi, 3400], #should be -1850, but not working as well
                 [-pi/2,pi/2, 1800/pi, 1500],
                 [0,pi, 1300/pi, 700]] 
 
-l1 = 15   #cm, == 5"7/8
-l2 = 18.5 #cm == 7"3/8
-l3 = 11.5 #cm == 4"1/2
+l1 = 14.5   #cm, == 5"7/8
+l2 = 18.0 #cm == 7"3/8
+l3 = 11.0 #cm == 4"1/2
 
 def xform_to_arm(coor):
     return([-coor[0]/10, -coor[1]/10, -coor[2]/10])
@@ -135,10 +135,10 @@ def find_angles(T3, a):
     b0, T2 = find_rotation(T3)
     try:
         P2 = (T2[0] - l3*cos(a), T2[1] -l3*sin(a))
-        #print P2
+        print "P2: ", P2
         d_sq = P2[0]*P2[0] + P2[1]*P2[1]
         d = sqrt(d_sq)
-        b2 = acos( (P2[0]*P2[0]+P2[1]*P2[1]-l1*l1-l2*l2) / (-2*l1*l2) )
+        b2 = acos( (d_sq-l1*l1-l2*l2) / (-2*l1*l2) )
         c1 = asin(P2[1]/d)
         c0 = acos( (l2*l2 - l1*l1 - d_sq) / (-2*l1*d) )
         b1 = pi/2 - c1 - c0
@@ -265,10 +265,12 @@ cnt = 0
 move_spd = 100
 next_move = [0,0,0,0]
 cur_move = [0,0,0,0]
-plug_d_bh = 280 #plug height that I want to see, which is then plug_d_cm away
-plug_d_bh_close = 380 #plug height at the closer location
-wait_1_time = 2
-get_close_l = 10
+plug_d_bh = 280 #plug height that I want to see
+pixel_per_cm = 20 #pixels per cm close to the center
+wait_1_time = 5
+wait_2_time = 2
+get_close_l = 5
+num_wrong = 0
 
 while(True):
     ret, frame = cap.read()
@@ -282,7 +284,8 @@ while(True):
             approx = cv2.approxPolyDP(blob, 30, True)
             cv2.drawContours(frame, [approx], 0, (0, 0, 255), 2)
             cv2.line(frame, (frame.shape[1]/2,frame.shape[0]/2-plug_d_bh/2),(frame.shape[1]/2,frame.shape[0]/2+plug_d_bh/2), (0,0,255))
-            cv2.putText(frame, 'State: {}, bh: {}, bw: {}'.format(state, bh, bw), (0,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
+            cv2.circle(frame, (frame.shape[1]/2, frame.shape[0]/2), 3, (0,0,255), -1)
+            cv2.putText(frame, 'State: {}, num_wrong: {}, bh: {}, bw: {}'.format(state, num_wrong, bh, bw), (0,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
             if state == 'wait_target':
                 cv2.putText(frame, 'press <space> to start', (0,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
             if state == 'find_center':
@@ -290,12 +293,16 @@ while(True):
                 next_move[1] = -np.sign( int(((y+bh/2) - (frame.shape[0]/2))/20) )
                 next_move[2] = -np.sign( int ((bh-plug_d_bh)/5)) #determine Z by the shape height, assuming no roll, accuracy of 5 pixels
                 next_move[3] = find_rect_contour_orientation_alt(blob)
+                if cur_move != next_move:
+                    num_wrong += 1
+                else:
+                    num_wrong = 0
                 cv2.putText(frame, 'moving to center, {}'.format(next_move), (0,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
                 if next_move == [0,0,0,0]: #we found center!
+                    stop_now(ser)
                     state = 'wait_1'
                     wait_start_time = time.time()
-                    stop_now(ser)
-                elif cur_move != next_move or not still_moving(ser):
+                elif num_wrong >= 5 or not still_moving(ser):
                     print 'change from ', cur_move, ' to ', next_move
                     if still_moving(ser):
                         print 'stop first'
@@ -306,21 +313,30 @@ while(True):
                     next_pos[0] = cur_pos[0] - next_move[3] * 1 #if I see left yaw, move right
                     next_pos[1] = cur_pos[1] + next_move[1] * 2 #if I see the center low, move low
                     next_pos[2] = cur_pos[2] + next_move[2] * 2 #if I see the blob far, move out
-                    next_pos[3] = cur_angles[4] + next_move[0] * (10.0/180*pi) #if I see the blob left, rotate angle to left
+                    next_pos[3] = cur_angles[4] + next_move[0] * (20.0/180*pi) #if I see the blob left, rotate angle to left
                     print 'next_pos: ', next_pos
-                    move_to_angle(ser, list(find_angles(next_pos[0:3],pi/2)) + [next_pos[3],pi], spd = move_spd)
+                    move_to_angle(ser, list(find_angles(next_pos[0:3],pi/2)) + [next_pos[3],pi], 1000)
                     cur_move = list(next_move)                                    
+                    num_wrong = 0
             if state == 'wait_1':
                 if time.time() - wait_start_time >= wait_1_time:
                     state = 'get_close'
                     cur_angles = angles_from_pos(get_pos(ser))
                     cur_pos = xyz_from_angles(cur_angles)
+                    #move_to_angle(ser,list(find_angles(cur_pos,pi/2)) + [cur_angles[4],pi], 500)
                     angle = atan(cur_pos[0]/cur_pos[2])+cur_angles[4]
+                    #calculate delta_x, delta_z assuming we're looking to the correct center
                     delta_z = get_close_l*cos(angle)
                     delta_x = get_close_l*sin(angle)
+                    delta_y = 0
+                    #but we're likely a bit off, so correct for that:
+                    fix_x = float(((x+bw/2) -frame.shape[1]/2))/pixel_per_cm
+                    fix_y = float(((y+bh/2) -frame.shape[0]/2))/pixel_per_cm
+                    print 'x+bw/2 ', x+bw/2, ' x_center: ', frame.shape[1]/2
+                    print '(fix_x, fix_y): ', (fix_x, fix_y)
                     next_pos = [0,0,0]
-                    next_pos[0] = cur_pos[0]+delta_x
-                    next_pos[1] = cur_pos[1]+3
+                    next_pos[0] = cur_pos[0]+delta_x+fix_x
+                    next_pos[1] = cur_pos[1]+delta_y+fix_y
                     next_pos[2] = cur_pos[2]+delta_z
                     new_angle = angle - atan(next_pos[0]/next_pos[2])
                     print 'cur_pos: ', cur_pos
@@ -343,6 +359,7 @@ while(True):
         if state == 'wait_target':
             state = 'find_center'
             cur_move = [0,0,0,0]
+            num_wrong = 0
         if state =='DONE':
             angles = list(find_angles(T_init,pi/2)) + [0,pi]
             #b0,b1,b2,b3 = find_angles(T_init,0)
