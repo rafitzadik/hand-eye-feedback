@@ -164,23 +164,29 @@ def xyz_from_angles(angles):
     
 
 green_lower = np.array([40, 20, 10],np.uint8)
-green_upper = np.array([110, 255, 120],np.uint8)
-red_lower = np.array([150, 80, 30],np.uint8)
-red_upper = np.array([250, 255, 255],np.uint8)
+green_upper = np.array([120, 255, 200],np.uint8)
+red_lower = np.array([160, 20, 10],np.uint8)
+red_upper = np.array([255, 255, 255],np.uint8)
+red_lower_2 = np.array([0, 20, 10],np.uint8)
+red_upper_2 = np.array([20, 255, 255],np.uint8)
 
-def detect_color(color,  lower_thresh, upper_thresh):
+def detect_color(color,  lower_thresh, upper_thresh, lower_thresh_2 = None, upper_thresh_2 = None, do_smooth = True):
     #look for saturated green and return its contour and center
     hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
     greenMask = cv2.inRange(hsv, lower_thresh, upper_thresh)
+    if lower_thresh_2 != None:
+        mask2 = cv2.inRange(hsv, lower_thresh_2, upper_thresh_2)
+        greenMask = cv2.bitwise_or(greenMask, mask2)
     # apply a series of erosions and dilations to the mask
     # using an elliptical kernel
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    greenMask = cv2.erode(greenMask, kernel, iterations = 2)
-    greenMask = cv2.dilate(greenMask, kernel, iterations = 2)
-     
-    # blur the mask to help remove noise, then apply the
-    # mask to the frame
-    greenMask = cv2.GaussianBlur(greenMask, (3, 3), 0)
+    if do_smooth:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        greenMask = cv2.erode(greenMask, kernel, iterations = 2)
+        greenMask = cv2.dilate(greenMask, kernel, iterations = 2)
+         
+        # blur the mask to help remove noise, then apply the
+        # mask to the frame
+        greenMask = cv2.GaussianBlur(greenMask, (3, 3), 0)
     
     #now find the contours of the mask
     _, contours, _ = cv2.findContours(greenMask,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
@@ -266,10 +272,11 @@ move_spd = 100
 next_move = [0,0,0,0]
 cur_move = [0,0,0,0]
 plug_d_bh = 280 #plug height that I want to see
-pixel_per_cm = 20 #pixels per cm close to the center
+pixel_per_cm = 30 #pixels per cm close to the center
+pixel_per_cm_close = 70
 wait_1_time = 5
 wait_2_time = 2
-get_close_l = 5
+get_close_l = 8
 num_wrong = 0
 
 while(True):
@@ -281,6 +288,16 @@ while(True):
             cv2.drawContours(frame, [blob], 0, (255, 0, 0), 2)
             x,y,bw,bh = cv2.boundingRect(blob)
             cv2.rectangle(frame,(x,y),(x+bw,y+bh),(0,255,0),2)
+            crop = frame[y:y+bh, x:x+bw, :]
+            red_dot, red_dot_center_crop = detect_color(crop, red_lower, red_upper, red_lower_2, red_upper_2, False)
+            if red_dot != None:
+                red_dot_center = (red_dot_center_crop[0]+x, red_dot_center_crop[1]+y)
+            else: #try over the whole picture:
+                red_dot, red_dot_center = detect_color(frame, red_lower, red_upper, red_lower_2, red_upper_2, False)            
+                if red_dot == None: #if still none, use the middle of the green blob
+                    red_dot_center = (x+bw/2, y+bh/2)
+            cv2.circle(frame, red_dot_center, 5, (255,255,255), 1)
+            #cv2.imshow('crop', crop)
             approx = cv2.approxPolyDP(blob, 30, True)
             cv2.drawContours(frame, [approx], 0, (0, 0, 255), 2)
             cv2.line(frame, (frame.shape[1]/2,frame.shape[0]/2-plug_d_bh/2),(frame.shape[1]/2,frame.shape[0]/2+plug_d_bh/2), (0,0,255))
@@ -289,8 +306,8 @@ while(True):
             if state == 'wait_target':
                 cv2.putText(frame, 'press <space> to start', (0,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
             if state == 'find_center':
-                next_move[0] = np.sign( int(((x+bw/2) - (frame.shape[1]/2))/20) ) #shape center minus frame center, accuracy of 20 pixels
-                next_move[1] = -np.sign( int(((y+bh/2) - (frame.shape[0]/2))/20) )
+                next_move[0] = np.sign( int((red_dot_center[0] - (frame.shape[1]/2))/20) ) #shape center minus frame center, accuracy of 20 pixels
+                next_move[1] = -np.sign( int((red_dot_center[1] - (frame.shape[0]/2))/20) )
                 next_move[2] = -np.sign( int ((bh-plug_d_bh)/5)) #determine Z by the shape height, assuming no roll, accuracy of 5 pixels
                 next_move[3] = find_rect_contour_orientation_alt(blob)
                 if cur_move != next_move:
@@ -313,7 +330,7 @@ while(True):
                     next_pos[0] = cur_pos[0] - next_move[3] * 1 #if I see left yaw, move right
                     next_pos[1] = cur_pos[1] + next_move[1] * 2 #if I see the center low, move low
                     next_pos[2] = cur_pos[2] + next_move[2] * 2 #if I see the blob far, move out
-                    next_pos[3] = cur_angles[4] + next_move[0] * (20.0/180*pi) #if I see the blob left, rotate angle to left
+                    next_pos[3] = cur_angles[4] + next_move[0] * (15.0/180*pi) #if I see the blob left, rotate angle to left
                     print 'next_pos: ', next_pos
                     move_to_angle(ser, list(find_angles(next_pos[0:3],pi/2)) + [next_pos[3],pi], 1000)
                     cur_move = list(next_move)                                    
@@ -323,31 +340,39 @@ while(True):
                     state = 'get_close'
                     cur_angles = angles_from_pos(get_pos(ser))
                     cur_pos = xyz_from_angles(cur_angles)
-                    #move_to_angle(ser,list(find_angles(cur_pos,pi/2)) + [cur_angles[4],pi], 500)
-                    angle = atan(cur_pos[0]/cur_pos[2])+cur_angles[4]
-                    #calculate delta_x, delta_z assuming we're looking to the correct center
-                    delta_z = get_close_l*cos(angle)
-                    delta_x = get_close_l*sin(angle)
-                    delta_y = 0
-                    #but we're likely a bit off, so correct for that:
-                    fix_x = float(((x+bw/2) -frame.shape[1]/2))/pixel_per_cm
-                    fix_y = float(((y+bh/2) -frame.shape[0]/2))/pixel_per_cm
-                    print 'x+bw/2 ', x+bw/2, ' x_center: ', frame.shape[1]/2
-                    print '(fix_x, fix_y): ', (fix_x, fix_y)
-                    next_pos = [0,0,0]
-                    next_pos[0] = cur_pos[0]+delta_x+fix_x
-                    next_pos[1] = cur_pos[1]+delta_y+fix_y
-                    next_pos[2] = cur_pos[2]+delta_z
-                    new_angle = angle - atan(next_pos[0]/next_pos[2])
-                    print 'cur_pos: ', cur_pos
-                    print 'cur_angles: ', cur_angles
-                    print 'angle: ', angle
-                    print 'next_pos: ', next_pos
-                    print 'new_angle: ', new_angle
-                    move_to_angle(ser,list(find_angles(next_pos,pi/2)) + [new_angle,pi], 2000)
+                    target_z = cur_pos[2]+get_close_l
             if state == 'get_close':
-                if not still_moving(ser):
+                cur_angles = angles_from_pos(get_pos(ser))
+                cur_pos = xyz_from_angles(cur_angles)
+                next_move[0] = np.sign( int((red_dot_center[0] - (frame.shape[1]/2))/30) ) #shape center minus frame center, accuracy of 20 pixels
+                next_move[1] = -np.sign( int((red_dot_center[1] - (frame.shape[0]/2))/30) )
+                next_move[2] = np.sign(int(target_z - cur_pos[2]))
+                next_move[3] = 0
+                if cur_move != next_move:
+                    num_wrong += 1
+                else:
+                    num_wrong = 0
+                cv2.putText(frame, 'moving to center, {}'.format(next_move), (0,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0))
+                if next_move == [0,0,0,0]: #we found center!
+                    stop_now(ser)
                     state = 'DONE'
+                elif num_wrong >= 3 or not still_moving(ser):
+                    print 'change from ', cur_move, ' to ', next_move
+                    if still_moving(ser):
+                        print 'stop first'
+                        stop_now(ser)
+                    cur_angles = angles_from_pos(get_pos(ser))
+                    cur_pos = xyz_from_angles(cur_angles)
+                    next_pos = [0,0,0,0]
+                    next_pos[0] = cur_pos[0] + (float(red_dot_center[0]) - float(frame.shape[1]/2))/pixel_per_cm_close
+                    next_pos[1] = cur_pos[1] - (float(red_dot_center[1]) - float(frame.shape[0]/2))/pixel_per_cm_close #if I see the center low, move low
+                    next_pos[2] = target_z #if I see the blob far, move out
+                    next_pos[3] = cur_angles[4]
+                    print 'red_dot_center: ', red_dot_center, ' target: ', (frame.shape[1]/2, frame.shape[0]/2)
+                    print 'cur_pos:', cur_pos, 'next_pos: ', next_pos
+                    move_to_angle(ser, list(find_angles(next_pos[0:3],pi/2)) + [next_pos[3],pi], 1000)
+                    cur_move = list(next_move)                                    
+                    num_wrong = 0
         #ret2, frame2 = cap2.read()
         #img2 = cv2.resize(frame2, (frame.shape[1], frame.shape[0]))
         #both = np.concatenate((frame,img2), axis=1)
