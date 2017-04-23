@@ -64,18 +64,18 @@ def move_to_angle(ser, angles, mov_time=None, spd=None):
     if (len(angles) != 6):
         print('angles should be a 6-tuple')
         return -1
-    if spd == None:
+    if spd is None:
         s = ''
     else:
         s = 'S{}'.format(spd)
     for (i,a) in enumerate(angles):
-        if a!=None:
+        if a is not None:
             sa = servo_angle(i,a)
             if (sa == -1):
                 print'bad servo angle for servo', i, ' requested ', a, ' (min,max): ', (servo_angles[i][0], servo_angles[i][1])
                 return -1
             out = out + '#{}P{}{}'.format(i, sa, s)
-    if time != None:
+    if time is not None:
         out = out + 'T{}'.format(mov_time)
     out = out+'\r'
     #print out
@@ -174,7 +174,7 @@ def detect_color(color,  lower_thresh, upper_thresh, lower_thresh_2 = None, uppe
     #look for saturated green and return its contour and center
     hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
     greenMask = cv2.inRange(hsv, lower_thresh, upper_thresh)
-    if lower_thresh_2 != None:
+    if lower_thresh_2 is not None:
         mask2 = cv2.inRange(hsv, lower_thresh_2, upper_thresh_2)
         greenMask = cv2.bitwise_or(greenMask, mask2)
     # apply a series of erosions and dilations to the mask
@@ -254,8 +254,13 @@ def find_rect_contour_orientation_alt(contour):
 
 cap = cv2.VideoCapture(3)
 #cap2 = cv2.VideoCapture(5)
+cap2 = None
 
-#outFile = cv2.VideoWriter('/home/rafi/Videos/find-plug.avi', cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), 20, (1280, 480), True)
+if cap2 is not None:
+    outFile = cv2.VideoWriter('/home/rafi/Videos/find-plug.avi', cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), 20, (1280, 480), True)
+else:
+    outFile = cv2.VideoWriter('/home/rafi/Videos/find-plug.avi', cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), 20, (640, 480), True)
+    
 
 ser = serial.Serial('/dev/ttyUSB0', 9600)
 zero_position(ser)
@@ -284,17 +289,17 @@ while(True):
 
     if (ret):
         blob, blob_cent = detect_color(frame, green_lower, green_upper)
-        if blob != None:
+        if blob is not None:
             cv2.drawContours(frame, [blob], 0, (255, 0, 0), 2)
             x,y,bw,bh = cv2.boundingRect(blob)
             cv2.rectangle(frame,(x,y),(x+bw,y+bh),(0,255,0),2)
             crop = frame[y:y+bh, x:x+bw, :]
             red_dot, red_dot_center_crop = detect_color(crop, red_lower, red_upper, red_lower_2, red_upper_2, False)
-            if red_dot != None:
+            if red_dot is not None:
                 red_dot_center = (red_dot_center_crop[0]+x, red_dot_center_crop[1]+y)
             else: #try over the whole picture:
                 red_dot, red_dot_center = detect_color(frame, red_lower, red_upper, red_lower_2, red_upper_2, False)            
-                if red_dot == None: #if still none, use the middle of the green blob
+                if red_dot is None: #if still none, use the middle of the green blob
                     red_dot_center = (x+bw/2, y+bh/2)
             cv2.circle(frame, red_dot_center, 5, (255,255,255), 1)
             #cv2.imshow('crop', crop)
@@ -332,7 +337,7 @@ while(True):
                     next_pos[2] = cur_pos[2] + next_move[2] * 2 #if I see the blob far, move out
                     next_pos[3] = cur_angles[4] + next_move[0] * (15.0/180*pi) #if I see the blob left, rotate angle to left
                     print 'next_pos: ', next_pos
-                    move_to_angle(ser, list(find_angles(next_pos[0:3],pi/2)) + [next_pos[3],pi], 1000)
+                    move_to_angle(ser, list(find_angles(next_pos[0:3],pi/2)) + [next_pos[3],pi], 2000)
                     cur_move = list(next_move)                                    
                     num_wrong = 0
             if state == 'wait_1':
@@ -370,15 +375,18 @@ while(True):
                     next_pos[3] = cur_angles[4]
                     print 'red_dot_center: ', red_dot_center, ' target: ', (frame.shape[1]/2, frame.shape[0]/2)
                     print 'cur_pos:', cur_pos, 'next_pos: ', next_pos
-                    move_to_angle(ser, list(find_angles(next_pos[0:3],pi/2)) + [next_pos[3],pi], 1000)
+                    move_to_angle(ser, list(find_angles(next_pos[0:3],pi/2)) + [next_pos[3],pi], 2000)
                     cur_move = list(next_move)                                    
                     num_wrong = 0
-        #ret2, frame2 = cap2.read()
-        #img2 = cv2.resize(frame2, (frame.shape[1], frame.shape[0]))
-        #both = np.concatenate((frame,img2), axis=1)
-        #cv2.imshow('frame',both)
-        #outFile.write(both)
-        cv2.imshow('frame',frame)
+        if cap2 is not None:
+            ret2, frame2 = cap2.read()
+            img2 = cv2.resize(frame2, (frame.shape[1], frame.shape[0]))
+            both = np.concatenate((frame,img2), axis=1)
+            cv2.imshow('frame',both)
+            outFile.write(both)
+        else:
+            cv2.imshow('frame',frame)
+            outFile.write(frame)
     key = cv2.waitKey(1) & 0xFF
     if key == ord(' '):
         if state == 'wait_target':
@@ -400,6 +408,7 @@ while(True):
 # When everything done, release the capture
 rest(ser)
 cap.release()
-#cap2.release()
-#outFile.release()
+if cap2 is not None:
+    cap2.release()
+outFile.release()
 cv2.destroyAllWindows()
